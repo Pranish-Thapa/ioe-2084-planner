@@ -694,6 +694,42 @@ section('18. You choose the day, or ask for a random one');
   eq((app.state.overrides.todayPicks[today] || []).length, 0, 'the picks can be cleared');
 }
 
+section('21. Partial progress is visible without expanding a chapter');
+{
+  go('#/syllabus');
+  // Pick a single-subtopic chapter, study most of it, and confirm the row
+  // shows the partial percentage. Reading "0/1 done" after a full hour of work
+  // is what makes real progress look like it was thrown away.
+  const unit = app.index.units.find((u) => u.topics.some((t) => t.itemIds.length === 1));
+  const topic = unit.topics.find((t) => t.itemIds.length === 1);
+  const id = topic.itemIds[0];
+  const pct = 91;
+  app.state.items[id] = {
+    ...(app.state.items[id] || {}),
+    progressPct: pct,
+    status: 'studying',
+    mcq: { att: 0, correct: 0, streak: 0, last: null },
+  };
+  update(() => {}, { keepScratch: true });
+  // Chapter rows only render inside an expanded chapter.
+  app.scratch.openUnits = { ...(app.scratch.openUnits || {}), [unit.id]: true };
+  go('#/syllabus');
+
+  const txt = allText();
+  const esc = topic.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  ok(new RegExp(`${esc}[\\s\\S]{0,240}?${pct}%`).test(txt),
+    `a chapter at ${pct}% shows that percentage on its row without being expanded`);
+  ok(new RegExp(`0/1[\\s\\S]{0,40}${pct}%`).test(txt),
+    'the done-count and the partial percentage appear together');
+
+  const subject = app.index.subjects.find((s) => s.units.some((u) => u.id === unit.id));
+  const tabText = [...nodes.get('view').walk()]
+    .filter((n) => n.tagName === 'A' && (n.textContent || '').includes(subject.name))
+    .map((n) => n.textContent).join(' ');
+  ok(/\(\d+%\)/.test(tabText),
+    `the subject tab shows partial progress too (${tabText.trim()})`);
+}
+
 console.log(`\n${'-'.repeat(60)}`);
 console.log(`${pass} passed, ${failures.length} failed`);
 if (failures.length) {

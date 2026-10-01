@@ -41,11 +41,14 @@ export function renderSyllabus(a) {
   row.append(all);
   for (const s of a.index.subjects) {
     const ids = s.units.flatMap((u) => u.itemIds);
-    const done = ids.filter((id) => (st.items[id] || {}).progressPct >= 100).length;
+    const agg = aggregate(a, ids);
+    // Same reason as the chapter rows: counting only completed subtopics makes
+    // an in-progress subject look untouched, because "done" is all-or-nothing.
+    const suffix = agg.pct > 0 && agg.done < ids.length ? ` (${agg.pct}%)` : '';
     row.append(el('a', {
       class: `btn sm${activeSubject === s.id ? ' primary' : ''}`,
       href: `#/syllabus/${s.id}`,
-    }, `${s.name} ${done}/${ids.length}`));
+    }, `${s.name} ${agg.done}/${ids.length}${suffix}`));
   }
   tabs.append(row);
   wrap.append(tabs);
@@ -143,7 +146,10 @@ function topicBlock(a, topic) {
   const g = el('div', { class: 'grow' });
   g.append(el('span', { class: 'topic-title' }, topic.title));
   const st = aggregate(a, topic.itemIds);
-  g.append(el('span', { class: 'meta small' }, ` ${st.done}/${topic.itemIds.length} · ${st.statusLabel}`));
+  // The partial percentage is the whole point: a chapter with one subtopic at
+  // 91% shows "0/1 done" forever, which reads as if the session was lost.
+  const partial = st.pct > 0 && st.done < topic.itemIds.length ? ` · ${st.pct}%` : '';
+  g.append(el('span', { class: 'meta small' }, ` ${st.done}/${topic.itemIds.length}${partial} · ${st.statusLabel}`));
   head.append(g);
 
   const pinnedIds = new Set(a.state.overrides?.pinnedItemIds || []);
@@ -256,13 +262,22 @@ function aggregate(a, ids) {
   let done = 0;
   const set = new Set();
   let weak = false;
+  // Weighted by estimate, because "0/1 done" after an hour of study is exactly
+  // the reading that makes real progress look like nothing happened.
+  let weighted = 0;
+  let weight = 0;
   for (const id of ids) {
     const r = a.state.items[id];
+    const item = a.index.byId.get(id);
+    const est = Math.max(1, (r && r.estMinOverride) || estOf(a, item));
+    weight += est;
     if (!r) { set.add(STATUS.NOT_STARTED); continue; }
     if (r.progressPct >= 100) done++;
+    weighted += est * Math.min(100, r.progressPct || 0);
     set.add(r.status);
     if (r.status === STATUS.WEAK) weak = true;
   }
+  const pct = weight ? Math.round(weighted / weight) : 0;
   let statusLabel = 'Not started';
   if (weak) statusLabel = 'Weak';
   else if (set.has(STATUS.STUDYING)) statusLabel = 'Studying';
@@ -270,5 +285,5 @@ function aggregate(a, ids) {
   else if (set.has(STATUS.STRONG)) statusLabel = 'Strong';
   else if (set.has(STATUS.STUDIED_ONCE)) statusLabel = 'Studied once';
   else if (done > 0) statusLabel = `${done}/${ids.length} done`;
-  return { done, statusLabel };
+  return { done, statusLabel, pct };
 }

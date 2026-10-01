@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Engine test suite. Runs headless in Node with no dependencies:
  *     npm test
  *
@@ -41,10 +41,10 @@ const failures = [];
 
 function ok(cond, label, detail = '') {
   if (cond) { pass++; console.log(`  PASS  ${label}`); }
-  else { fail++; failures.push(`${label}${detail ? ' — ' + detail : ''}`); console.log(`  FAIL  ${label}${detail ? ' — ' + detail : ''}`); }
+  else { fail++; failures.push(`${label}${detail ? ' â€” ' + detail : ''}`); console.log(`  FAIL  ${label}${detail ? ' â€” ' + detail : ''}`); }
 }
 function eq(a, b, label) { ok(a === b, label, `expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); }
-function near(a, b, tol, label) { ok(Math.abs(a - b) <= tol, label, `expected ~${b}±${tol}, got ${a}`); }
+function near(a, b, tol, label) { ok(Math.abs(a - b) <= tol, label, `expected ~${b}Â±${tol}, got ${a}`); }
 function section(t) { console.log(`\n${t}`); }
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +89,7 @@ section('1. Syllabus database integrity');
     const joined = subs.join(' ').replace(/[^a-z0-9 ]/g, '');
     const key = t.title.toLowerCase().split(/[;:]/)[0].replace(/[^a-z0-9 ]/g, '').trim();
     const first = key.split(' ').slice(0, 3).join(' ');
-    if (first.length > 6) ok(joined.includes(first), `subtopics preserve source text for "${t.title.slice(0, 40)}…"`);
+    if (first.length > 6) ok(joined.includes(first), `subtopics preserve source text for "${t.title.slice(0, 40)}â€¦"`);
   }
 }
 
@@ -97,9 +97,9 @@ section('2. Subtopic derivation is safe');
 {
   eq(deriveSubtopics('').length, 1, 'empty string still yields one subtopic');
   eq(deriveSubtopics('!!!???').length, 1, 'punctuation-only yields one subtopic');
-  const one = deriveSubtopics('Young’s double slit experiment');
+  const one = deriveSubtopics('Youngâ€™s double slit experiment');
   eq(one.length, 1, 'a short phrase is not split');
-  const many = deriveSubtopics('Electrostatics: Coulomb’s law, electric field and Gauss law, potential and potential gradient, capacitors and combinations, dielectrics, energy stored, polarization and displacement');
+  const many = deriveSubtopics('Electrostatics: Coulombâ€™s law, electric field and Gauss law, potential and potential gradient, capacitors and combinations, dielectrics, energy stored, polarization and displacement');
   ok(many.length >= 4, 'a long colon-list splits into several subtopics');
   ok(many[0].toLowerCase().includes('electrostatics'), 'the label is preserved on the first subtopic');
   for (const s of many) ok(s.replace(/[^a-z]/gi, '').length > 2, `subtopic is not a fragment: "${s.slice(0, 30)}"`);
@@ -499,6 +499,12 @@ section('13. Outcomes drive adaptation');
 function estOf(s, item) {
   const r = getItem(s, item.id);
   return r.estMinOverride || item.estMin;
+}
+
+/** Minutes still outstanding for an item, matching the planner's own rule. */
+function learnLeft(s, idx, id) {
+  const e = estOf(s, idx.byId.get(id));
+  return Math.max(0, Math.round(e * (1 - (getItem(s, id).progressPct || 0) / 100)));
 }
 
 section('14. Terminal strategy after the syllabus is finished');
@@ -1029,6 +1035,74 @@ section('24. A hand-picked day stays hand-picked, and reports honestly');
       'and the finished day contains no unrequested chapter at all');
     // sawBonus only documents whether the bonus path was reachable at all.
     if (!sawBonus) console.log('      (no bonus block occurred on a picked day)');
+  }
+}
+
+section('25. A chapter is never stranded by a rounding tail');
+{
+  const idx = buildIndex(allSubjectGroups(false));
+  const st0 = defaultState();
+  const est = (it) => estOf(st0, it);
+  const unit = idx.units.find((u) => u.subjectId === 'CHE');
+  const topic = unit.topics.find((t) => t.itemIds.length === 1 && est(idx.byId.get(t.itemIds[0])) >= 40);
+  const sid = topic.itemIds[0];
+  const chapterEst = est(idx.byId.get(sid));
+
+  // Every remainder a chapter can be left with must still be reachable. The
+  // floors that keep untouched content in usable blocks must not apply to a
+  // chapter the student has already started, or the last few minutes of a
+  // chapter can never be scheduled and it is never counted done either.
+  const unreachable = [];
+  for (let leftMin = 1; leftMin <= 14; leftMin++) {
+    const pct = Math.round(100 * (1 - leftMin / chapterEst));
+    const st = defaultState();
+    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2020-01-01' };
+    const d = generatePlan(st, idx, { today: todayISO() }).plan[todayISO()];
+    const task = d.tasks.find((x) => x.type === 'learn' && x.topicId === topic.id);
+    if (!task) { unreachable.push(`${Math.round(chapterEst * (1 - pct / 100))}m`); continue; }
+    ok(task.plannedMin > 0, `a ${Math.round(chapterEst * (1 - pct / 100))}m remainder is a real block, not a 0-minute one`);
+  }
+  eq(unreachable.length, 0, `every small remainder is still schedulable (missed: ${unreachable.join(', ') || 'none'})`);
+
+  // And the finishing block must actually close the chapter out.
+  {
+    const pct = Math.round(100 * (1 - 6 / chapterEst));
+    const st = defaultState();
+    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2020-01-01' };
+    const r = generatePlan(st, idx, { today: todayISO() });
+    const task = r.plan[todayISO()].tasks.find((x) => x.type === 'learn' && x.topicId === topic.id);
+    commitPlan(st, r);
+    logTask(st, idx, todayISO(), task, OUTCOMES.DONE, task.plannedMin, 1);
+    ok(getItem(st, sid).progressPct >= 100 || learnLeft(st, idx, sid) === 0,
+      'logging the finishing block leaves no minutes outstanding');
+    const next = generatePlan(st, idx, { today: D.addDays(todayISO(), 1) }).plan[D.addDays(todayISO(), 1)];
+    ok(!next.tasks.some((x) => x.type === 'learn' && x.topicId === topic.id),
+      'and the chapter does not come back');
+  }
+
+  // A finished chapter must never be re-offered as a 0-minute block: that is
+  // what silently switched learn off for a whole day when the tail filter was
+  // first relaxed.
+  {
+    const st = defaultState();
+    const groups = allSubjectGroups(false);
+    ok(groups.length > 0, 'sanity');
+    const d = generatePlan(st, idx, { today: todayISO() }).plan[todayISO()];
+    ok(d.tasks.filter((x) => x.type === 'learn').every((x) => x.plannedMin > 0),
+      'every learn block on a fresh plan has a positive length');
+  }
+
+  // The relaxation must not shrink the overall plan.
+  {
+    const st = defaultState();
+    for (const it of idx.units.slice(0, 2).flatMap((u) => u.itemIds.slice(0, 3))) {
+      const rec = getItem(st, it);
+      rec.progressPct = Math.min(100, rec.progressPct + 40);
+      rec.status = STATUS.STUDYING;
+    }
+    const r = generatePlan(st, idx);
+    const learn = Object.values(r.plan).flatMap((d) => d.tasks).filter((x) => x.type === 'learn');
+    ok(learn.length >= 100, `new material is still scheduled across the horizon (${learn.length} blocks)`);
   }
 }
 console.log(`  ${pass} passed, ${fail} failed`);

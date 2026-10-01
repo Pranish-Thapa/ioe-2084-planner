@@ -165,11 +165,19 @@ function groupTopics(state, index, sim, ctx, limit = 10, minLeft = 8) {
     }
     g.members.push(item);
     g.left += learnMinutesLeft(state, index, sim, item.id);
+    // A chapter the student has already started is allowed to be a small
+    // finishing block. The floors below exist to avoid offering an unusable
+    // sliver of *untouched* content; refusing the last 10 minutes of a chapter
+    // you already did 50 minutes of strands it permanently.
+    if (simGet(sim, item.id).progressPct > 0) g.started = true;
     // Chapter cohesion means the whole topic should agree on its urgency, so
     // take the most urgent subtopic rather than averaging it away.
     g.score = Math.max(g.score, needScore(state, index, sim, item, ctx));
   }
-  const out = [...groups.values()].filter((g) => g.left >= minLeft);
+  // `g.left > 0` is essential: a chapter with nothing left is finished, not
+  // "started and unfinished". Letting it through yields a 0-minute task, which
+  // `add()` rejects, which marks learn dead for the whole day.
+  const out = [...groups.values()].filter((g) => g.left > 0 && (g.left >= minLeft || g.started));
   if (ctx.shuffleSeed != null) {
     // Randomise the order, then still prefer the most urgent when the budget
     // cannot take everything: the day varies, the plan never becomes reckless.
@@ -615,7 +623,10 @@ function makeTask(type, args) {
     if (ctx.picks && ctx.picks.length) return null;
     const cands = groupTopics(state, index, sim, ctx).filter((g) => !subjectFull(g.subjectId));
     for (const g of cands) {
-      if (g.left < minT - 4) continue;
+      // Same rule as the group filter: a chapter already in progress may be a
+      // short finishing block, an untouched one may not.
+      if (g.left <= 0) continue;
+      if (g.left < minT - 4 && !g.started) continue;
       const chunk = Math.max(minT, Math.min(maxT, g.left, budget));
       const t = mkLearnTask(state, index, sim, g, chunk, ctx, date);
       return { task: t, after: () => simAdvanceLearnBlock(state, index, sim, g, t.plannedMin, date) };

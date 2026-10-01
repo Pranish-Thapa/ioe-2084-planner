@@ -25,7 +25,7 @@ opening the files through a local server. Do **not** open `index.html` with a
 from the filesystem.
 
 ```bash
-npm test           # engine suite + UI suite (1029 assertions)
+npm test           # engine suite + UI suite (1052 assertions)
 npm run test:engine
 npm run test:ui
 npm run validate   # syllabus database self-check
@@ -175,7 +175,7 @@ src/
   ui/                 one module per view
   util/               DOM helpers, date helpers
 tests/
-  engine.test.js      808 assertions, no DOM required
+  engine.test.js      828 assertions, no DOM required
   ui.test.js          221 assertions, renders every view for real
   dom-shim.mjs        minimal DOM so the UI can be tested headless
   browser.test.js     95 assertions, drives real headless Edge
