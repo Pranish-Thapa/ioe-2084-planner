@@ -168,8 +168,14 @@ function chooseTodayCard(a, date, day) {
   }
 
   if (mode === 'picks') {
-    const done = (day && typeof day.picksDone === 'number') ? day.picksDone : 0;
-    const miss = day && day.picksMissed ? day.picksMissed.length : 0;
+    // Progress must come from the freshly derived plan, not `state.days`.
+    // commitPlan deliberately does not mirror picksDone, and state.days wins
+    // the lookup at the top of this view, so reading it from there pinned the
+    // counter at 0 forever.
+    const live = a.plan.plan[date];
+    const num = (v) => (typeof v === 'number' ? v : null);
+    const done = num(live?.picksDone) ?? num(day?.picksDone) ?? 0;
+    const miss = (live?.picksMissed || day?.picksMissed || []).length;
     c.append(el('div', { class: 'row small muted', style: 'margin-bottom:8px;gap:10px' },
       el('span', {},
         picks.length

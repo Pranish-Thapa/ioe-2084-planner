@@ -25,7 +25,7 @@ opening the files through a local server. Do **not** open `index.html` with a
 from the filesystem.
 
 ```bash
-npm test           # engine suite + UI suite (1052 assertions)
+npm test           # engine suite + UI suite (1057 assertions)
 npm run test:engine
 npm run test:ui
 npm run validate   # syllabus database self-check

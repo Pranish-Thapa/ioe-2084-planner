@@ -19,9 +19,9 @@ installDocument();
 const store = await import('../src/core/store.js');
 store.resetAll();
 
-const { app, update, go, openModal, closeModal } = await import('../src/app.js');
+const { app, update, go, openModal, closeModal, recompute } = await import('../src/app.js');
 const { todayISO, addDays } = await import('../src/util/dates.js');
-const { OUTCOMES } = await import('../src/core/planner.js');
+const { OUTCOMES, commitPlan } = await import('../src/core/planner.js');
 const { SYLLABUS_VERSION } = await import('../data/syllabus.js');
 const { QUESTION_BANK } = await import('../data/questions.js');
 
@@ -730,6 +730,45 @@ section('21. Partial progress is visible without expanding a chapter');
     `the subject tab shows partial progress too (${tabText.trim()})`);
 }
 
+section('22. The picked-topic counter is read from the live plan, not the mirror');
+{
+  // The bug this guards: commitPlan does not mirror picksDone into state.days,
+  // and the Today view reads state.days first. The counter therefore showed a
+  // permanent 0 even though the derived plan had it right.
+  const today = todayISO();
+  const unit = app.index.units.find((u) => u.topics.some((t) => t.itemIds.length === 1));
+  const topic = unit.topics.find((t) => t.itemIds.length === 1);
+  const key = `${unit.id}::${topic.id}`;
+
+  app.state.overrides.todayPicks[today] = [key];
+  recompute();
+  commitPlan(app.state, app.plan);
+  ok(typeof app.state.days[today]?.picksDone === 'undefined',
+    'the committed mirror genuinely has no picksDone (the trap)');
+
+  go('#/today');
+  ok(/of 1 picked topic done today/.test(allText()), 'the card renders the counter before any work');
+
+  // Now finish the pick for real, the way the app does: mutate, recompute, commit.
+  const id = topic.itemIds[0];
+  app.state.items[id] = {
+    ...(app.state.items[id] || {}),
+    progressPct: 100,
+    status: 'studied_once',
+    mcq: { att: 0, correct: 0, streak: 0, last: null },
+  };
+  recompute();
+  commitPlan(app.state, app.plan);
+  eq(app.plan.plan[today].picksDone, 1, 'the derived plan knows the pick is finished');
+  eq(app.state.days[today].picksDone, undefined, 'but the mirror still does not');
+
+  go('#/today');
+  ok(/1 of 1 picked topic done today/.test(allText()),
+    'and the view shows the finished count rather than a stuck 0');
+
+  delete app.state.overrides.todayPicks[today];
+  recompute();
+}
 console.log(`\n${'-'.repeat(60)}`);
 console.log(`${pass} passed, ${failures.length} failed`);
 if (failures.length) {
