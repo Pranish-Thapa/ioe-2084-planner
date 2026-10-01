@@ -1,0 +1,48 @@
+name: Deploy to GitHub Pages
+
+# The app has no build step: it is native ES modules and plain CSS. This only
+# copies the files the browser actually needs and publishes them, so tests,
+# the dev server and the docs stay out of the deployed site.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage the static site
+        run: |
+          mkdir -p _site
+          cp index.html styles.css _site/
+          cp -r src data _site/
+          # Hash routing means there is no SPA rewrite to configure, and every
+          # asset path in the app is relative, so it works under /<repo>/.
+          test -f _site/index.html
+          test -f _site/src/app.js
+          test -f _site/data/syllabus.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

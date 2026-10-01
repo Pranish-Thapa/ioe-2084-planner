@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>IOE 2084 Planner</title>
+<link rel="stylesheet" href="./styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#128218;</text></svg>" />
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <noscript><p class="noscript">This planner needs JavaScript. The syllabus, the
+  planner engine and all your progress are generated in the browser.</p></noscript>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">IOE</span>
+      <span class="brand-text">
+        <strong>Study Planner</strong>
+        <small id="brandSub">B.E. / B.Arch. Class 12</small>
+      </span>
+    </div>
+    <div class="topbar-right">
+      <div id="riskPill" class="pill" title="Deadline feasibility">—</div>
+      <div id="countdown" class="countdown" title="Days until your deadline">—</div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Main"></nav>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main id="view" class="view" tabindex="-1"></main>
+
+  <footer class="footer">
+    <span id="footVersion"></span>
+    <span>·</span>
+    <span>All dates and progress are stored only in this browser.</span>
+    <span>·</span>
+    <a href="#/assumptions">Assumptions &amp; sources</a>
+  </footer>
+
+  <div id="modal" class="modal" hidden></div>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>

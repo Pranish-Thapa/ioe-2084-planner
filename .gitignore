@@ -1,0 +1,14 @@
+node_modules/
+npm-debug.log*
+*.log
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Manual backups made while editing
+*.good
+*.orig
+*.bak

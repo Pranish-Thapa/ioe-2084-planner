@@ -1,0 +1,18 @@
+{
+  "name": "ioe-2084-planner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adaptive IOE (B.E./B.Arch.) entrance study planner — zero runtime dependencies, runs offline in the browser.",
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node tests/engine.test.js && node tests/ui.test.js",
+    "test:engine": "node tests/engine.test.js",
+    "test:ui": "node tests/ui.test.js",
+    "test:browser": "node tests/browser.test.js",
+    "validate": "node tests/engine.test.js && node -e \"import('./src/core/store.js').then(async (s)=>{const st=s.defaultState();const {buildIndex}=await import('./src/core/model.js');const {allSubjectGroups,SYLLABUS_META}=await import('./data/syllabus.js');const {runValidation}=await import('./src/core/validate.js');const r=runValidation(st,{index:buildIndex(allSubjectGroups(false))});console.log(JSON.stringify({syllabus:SYLLABUS_META.version,errors:r.errors.length,warnings:r.warnings.length,ok:r.ok},null,2));if(!r.ok)process.exit(1);})\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
