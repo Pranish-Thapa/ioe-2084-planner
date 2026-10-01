@@ -97,11 +97,10 @@ export function defaultSettings() {
     mcqPerTopic: 12,
     mixedMcqSize: 20,
 
-    // How new material is chosen for a day:
-    //   auto    - the planner ranks topics by urgency and takes the best fit
-    //   shuffle - it still respects due revisions and the daily budget, but
-    //             picks among the still-needed topics at random, so a day is
-    //             not always the same handful of chapters in the same order
+    // A day is either the planner's own choice or one the student picked by
+    // hand. There is no random mode: a plan the student cannot explain is a
+    // plan they will not trust. The key is kept so older saved states, which
+    // stored 'shuffle' here, still load; the planner ignores it.
     planStyle: 'auto',
   };
 }

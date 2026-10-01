@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Engine test suite. Runs headless in Node with no dependencies:
  *     npm test
  *
@@ -19,7 +19,7 @@ globalThis.localStorage = {
 const {
   defaultState, getItem, STATUS, save, load, exportJSON, importJSON, resetAll,
 } = await import('../src/core/store.js');
-const { buildIndex, coverage, deriveSubtopics, unitStats, marksLabel } = await import('../src/core/model.js');
+const { buildIndex, coverage, deriveSubtopics, unitStats, marksLabel, estMinutesFor } = await import('../src/core/model.js');
 const {
   generatePlan, commitPlan, logTask, undoSessions, recordAnswer, OUTCOMES, chapterIntelligence, evaluateMastery, picksForDate,
 } = await import('../src/core/planner.js');
@@ -238,6 +238,40 @@ section('7. Completing a chapter unlocks the next one and preserves revision');
     .filter((t) => t.type === 'revise');
   ok(laterRevise.length > 0, 'revision tasks appear in the plan after chapter completion');
   ok(laterRevise.some((t) => t.unitId === firstUnit.id), 'the finished chapter comes back for revision');
+}
+
+section('7b. A revision block revises a group, and the urgent one goes first');
+{
+  const st = defaultState();
+  const i3 = buildIndex(allSubjectGroups(false));
+  const today = todayISO();
+  // Two chapters in different subjects, so nothing is held back by a cap.
+  const chapterA = i3.items.filter((i) => `${i.unitId}::${i.topicId}` === 'MATH-U1::MATH-U1-T1').map((i) => i.id);
+  const chapterB = i3.items.filter((i) => `${i.unitId}::${i.topicId}` === 'PHY-U1::PHY-U1-T1').map((i) => i.id);
+  ok(chapterA.length > 1 && chapterB.length > 0, 'two chapters are available to make due');
+
+  // One chapter comes due today; the other has been waiting nine days.
+  for (const id of chapterA) {
+    const r = getItem(st, id);
+    r.progressPct = 100; r.status = STATUS.STUDIED_ONCE; r.nextRevisionDue = today;
+  }
+  for (const id of chapterB) {
+    const r = getItem(st, id);
+    r.progressPct = 100; r.status = STATUS.STUDIED_ONCE; r.nextRevisionDue = D.addDays(today, -9);
+  }
+
+  const r = generatePlan(st, i3, { today });
+  const revs = r.plan[today].tasks.filter((t) => t.type === 'revise');
+  ok(revs.length > 0, 'due revisions are planned');
+  eq(revs[0].unitId, 'PHY-U1', 'the overdue chapter is revised first, not merely the biggest one');
+  // A block covers several subtopics at once, so the backlog can actually shrink.
+  const grouped = revs.find((t) => Array.isArray(t.itemIds) && t.itemIds.length > 1);
+  ok(!!grouped, 'a revision block groups the subtopics that came due together');
+  ok(/came due/.test(grouped.reason), 'and says how many it covers');
+  ok(grouped.plannedMin >= grouped.itemIds.length,
+    `giving each subtopic time to recall (${grouped.plannedMin}m for ${grouped.itemIds.length})`);
+  ok(!revs.some((t) => Array.isArray(t.itemIds) && t.itemIds.length > 12),
+    'a revision block stays a usable size rather than swallowing the day');
 }
 
 section('8. Spaced revision responds to performance');
@@ -833,7 +867,7 @@ section('22. There is exactly one way to block a day');
   const bothMigrated = importJSON(JSON.stringify(both));
   eq(bothMigrated.settings.busyDays[d], 90, 'an explicit busyDays value is not overwritten by migration');
 }
-section('23. The student can choose the day, or have it randomised');
+section('23. The student chooses the day, and that choice is always honoured');
 {
   const st = defaultState();
   const idx = buildIndex(allSubjectGroups(st.settings.trackBArch));
@@ -879,39 +913,43 @@ section('23. The student can choose the day, or have it randomised');
   const bad = generatePlan(st2, idx, { today });
   eq((bad.plan[today].picksMissed || []).length, 1, 'an unresolvable pick is reported back to the student');
 
-  // --- randomised -------------------------------------------------------
+  // --- a choice is never dropped to fit the budget ------------------------
   const st3 = defaultState();
-  st3.settings.planStyle = 'shuffle';
-  const a1 = generatePlan(st3, idx, { today });
-  const a2 = generatePlan(st3, idx, { today });
+  // Pick enough chapters that they cannot possibly fit in one day.
+  const greedy = keys.slice(0, 14);
+  st3.overrides.todayPicks[today] = greedy;
+  const big = generatePlan(st3, idx, { today });
+  const bigDay = big.plan[today];
+  const bigLearn = bigDay.tasks.filter((t) => t.type === 'learn').map((t) => keyOf(big, t));
+  eq(bigLearn.length, greedy.length,
+    'every chosen chapter is planned even when they do not fit in the day');
+  eq((bigDay.picksMissed || []).length, 0, 'and none of them is reported as missed');
+  ok(bigDay.plannedMin > bigDay.availableMin,
+    `the day is honestly allowed to run over: ${bigDay.plannedMin}m planned vs ${bigDay.availableMin}m available`);
+
+  // --- no random mode, including for older saved states ------------------
+  const st4 = defaultState();
+  st4.settings.planStyle = 'shuffle';       // what an older version saved
+  st4.overrides.shuffleNonce[today] = 7;
+  const r4 = generatePlan(st4, idx, { today });
+  const r4b = generatePlan(st4, idx, { today });
   const learnSig = (p) => JSON.stringify(p.plan[today].tasks.map((t) => `${t.type}:${t.itemId}:${t.plannedMin}`));
-  eq(learnSig(a1), learnSig(a2), 'a randomised day is identical when re-derived, so it cannot churn mid-session');
-  eq(a1.plan[today].pickStyle, 'shuffle', 'the day records that it was randomised');
+  eq(learnSig(r4), learnSig(r4b), 'a day is identical when re-derived, so it cannot churn mid-session');
+  eq(r4.plan[today].pickStyle, 'auto', 'a saved random day loads as the planner\'s own choice');
+  ok(learnSig(r4) === learnSig(generatePlan(defaultState(), idx, { today })),
+    'and is planned exactly as a normal day would be');
 
-  // Bumping the nonce is what actually changes the day.
-  st3.overrides.shuffleNonce[today] = 1;
-  const a3 = generatePlan(st3, idx, { today });
-  ok(learnSig(a3) !== learnSig(a1), '"shuffle again" produces a different day');
-
-  // Randomising must never buy extra time or break the ceiling.
   let overBudget = 0;
   for (let n = 0; n < 12; n++) {
-    st3.overrides.shuffleNonce[today] = n;
-    const p = generatePlan(st3, idx, { today });
+    const p = generatePlan(st4, idx, { today });
     for (const [d, dd] of Object.entries(p.plan)) {
       if (dd.plannedMin > dd.availableMin) overBudget++;
       if (dd.closed && dd.tasks.length) overBudget++;
     }
   }
-  eq(overBudget, 0, 'randomising never exceeds a day\'s available minutes or schedules a closed day');
+  eq(overBudget, 0, 'no day exceeds its available minutes or schedules a closed day');
 
-  // Due revisions must survive randomising - they are obligations, not taste.
-  const st4 = defaultState();
-  st4.settings.planStyle = 'shuffle';
-  const r4 = generatePlan(st4, idx, { today });
-  ok(r4.plan[today].plannedMin <= r4.plan[today].availableMin,
-    'a randomised first day still fits in the day');
-  ok(day.plannedMin <= day.availableMin, 'a hand-picked day also fits in the day');
+  ok(day.plannedMin <= day.availableMin, 'a modest hand-picked day still fits in the day');
 }
 section('24. A hand-picked day stays hand-picked, and reports honestly');
 {
@@ -955,14 +993,96 @@ section('24. A hand-picked day stays hand-picked, and reports honestly');
     eq(d.picksDone, picked.length, `every pick is reported as done (${d.picksDone}/${d.picksTotal})`);
   }
 
-  // --- a pick that only partly fits stays, and says how far it got --------
+  // --- "Done" finishes the chapter, and only then counts as done ---------
   {
     const st = defaultState();
     st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
-    let r = generatePlan(st, idx, { today });
+    const chapter = idx.items.filter((i) => `${i.unitId}::${i.topicId}` === 'MATH-U1::MATH-U1-T1');
+    ok(chapter.length > 1, 'the chapter really is split into subtopics');
+
+    const r0 = generatePlan(st, idx, { today });
+    const t0 = r0.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+    ok(!!t0, 'the pick is planned');
+    eq(r0.plan[today].picksDone, 0,
+      'a chapter the planner has merely scheduled is not reported as done');
+
+    commitPlan(st, r0);
+    logTask(st, idx, today, t0, OUTCOMES.DONE, t0.plannedMin, 1);
+
+    // The estimate may have been larger than the block, but the student said
+    // the chapter is finished, so every subtopic of it must be finished.
+    for (const i of chapter) {
+      eq(st.items[i.id]?.progressPct ?? 0, 100,
+        `clicking Done finishes the whole chapter (${i.id})`);
+    }
+    // Counts are chapter-wide, so the tally can only add up if every one is.
+    const d = generatePlan(st, idx, { today }).plan[today];
+    eq(d.picksDone, 1, 'and the pick is then reported as done');
+    ok(!d.tasks.some((x) => x.type === 'learn' && x.picked),
+      'with no leftover tail task for a chapter the student finished');
+  }
+
+  // --- finishing a chapter starts its revision clock ----------------------
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
+    const chapter = idx.items.filter((i) => `${i.unitId}::${i.topicId}` === 'MATH-U1::MATH-U1-T1');
+    const r0 = generatePlan(st, idx, { today });
+    commitPlan(st, r0);
+    const t0 = r0.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+    logTask(st, idx, today, t0, OUTCOMES.DONE, t0.plannedMin, 1);
+
+    for (const i of chapter) {
+      ok(st.items[i.id]?.nextRevisionDue, `${i.id} is now scheduled for revision`);
+      ok(D.diffDays(today, st.items[i.id].nextRevisionDue) >= 1,
+        `${i.id} comes back in the future, not on the day it was studied`);
+    }
+
+    // And it is actually reachable: the revision must be plannable, not stranded
+    // behind a per-subject cap.
+    const when = st.items[chapter[0].id].nextRevisionDue;
+    const onDue = generatePlan(st, idx, { today: when }).plan[when];
+    ok(onDue.tasks.some((t) => t.type === 'revise'),
+      `the finished chapter is planned for revision on ${when}`);
+  }
+
+  // --- minutes are credited to the subtopic they were actually spent on ----
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
+    const r = generatePlan(st, idx, { today });
     commitPlan(st, r);
     const t = r.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
-    logTask(st, idx, today, t, OUTCOMES.DONE, t.plannedMin, 1);
+    const mins = t.itemIds.map((id) => {
+      const it = idx.byId.get(id);
+      return st.items[id].estMinOverride || estMinutesFor(st, it);
+    });
+    // A short session lands part-way into the first subtopics, which is exactly
+    // where the old code credited give^2/est minutes instead of give.
+    const spent = Math.min(10, Math.floor(mins.reduce((a, b) => a + b, 0) / 3));
+    const before = t.itemIds.map((id) => st.items[id].progressPct || 0);
+    logTask(st, idx, today, t, OUTCOMES.PARTIAL, spent, 1);
+
+    const credited = t.itemIds.reduce((sum, id, n) => {
+      const it = idx.byId.get(id);
+      const est = st.items[id].estMinOverride || estMinutesFor(st, it);
+      const beforePct = before[n];
+      const afterPct = st.items[id].progressPct || 0;
+      return sum + (est * (afterPct - beforePct)) / 100;
+    }, 0);
+    ok(Math.abs(credited - spent) <= 1.5,
+      `a ${spent}-minute session credits ${Math.round(credited)} minutes of progress, not a fraction of them`);
+  }
+
+  // --- a partly studied chapter still reports honest progress -------------
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
+    const r = generatePlan(st, idx, { today });
+    commitPlan(st, r);
+    const t = r.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+    // Half the block: this is a session, not a completion, so the chapter stays.
+    logTask(st, idx, today, t, OUTCOMES.PARTIAL, t.plannedMin, 0.5);
 
     const d = generatePlan(st, idx, { today }).plan[today];
     const left = d.tasks.find((x) => x.type === 'learn' && x.picked);
@@ -975,6 +1095,7 @@ section('24. A hand-picked day stays hand-picked, and reports honestly');
     eq(left.subtopicsTotal, chapter.length, 'the subtopic total is the whole chapter, not the remainder');
     eq(left.subtopicsDone, chapter.filter((i) => (st.items[i.id]?.progressPct ?? 0) >= 100).length,
       'and the done count matches the recorded state');
+    eq(d.picksDone, 0, 'a chapter that is only part-way is not counted as done');
   }
 
   // --- leftover time goes to practice only after the picks are served -----
@@ -1056,7 +1177,7 @@ section('25. A chapter is never stranded by a rounding tail');
   for (let leftMin = 1; leftMin <= 14; leftMin++) {
     const pct = Math.round(100 * (1 - leftMin / chapterEst));
     const st = defaultState();
-    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2020-01-01' };
+    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2099-01-01' };
     const d = generatePlan(st, idx, { today: todayISO() }).plan[todayISO()];
     const task = d.tasks.find((x) => x.type === 'learn' && x.topicId === topic.id);
     if (!task) { unreachable.push(`${Math.round(chapterEst * (1 - pct / 100))}m`); continue; }
@@ -1068,7 +1189,7 @@ section('25. A chapter is never stranded by a rounding tail');
   {
     const pct = Math.round(100 * (1 - 6 / chapterEst));
     const st = defaultState();
-    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2020-01-01' };
+    st.items[sid] = { ...st.items[sid], progressPct: pct, status: STATUS.STUDYING, nextRevisionDue: '2099-01-01' };
     const r = generatePlan(st, idx, { today: todayISO() });
     const task = r.plan[todayISO()].tasks.find((x) => x.type === 'learn' && x.topicId === topic.id);
     commitPlan(st, r);

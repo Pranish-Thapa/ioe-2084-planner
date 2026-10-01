@@ -238,68 +238,70 @@ section('5b. You can hand-pick the day in a real browser');
   await sleep(700);
   const modes = await evaluate(c, `
     return [...document.querySelectorAll('#view button[data-mode]')].map((b) => b.dataset.mode);`);
-  ok(modes.join(',') === 'auto,shuffle,picks', `the three ways of choosing a day are on screen (${modes.join(',')})`);
+  ok(modes.join(',') === 'auto,picks', `the two ways of choosing a day are on screen (${modes.join(',')})`);
+  ok(!(await evaluate(c, `
+    return /Shuffle again|Random/.test(document.getElementById('view').innerText);`)),
+    'the random-day control is gone from the page');
 
-  // Real click on a real checkbox, inside a collapsed <details>. The node has
-  // to be re-queried after each click, because ticking re-renders the view and
-  // the old element is detached - which is exactly what a real user sees.
+  // Switching to "My chapters" must pre-fill the planner's own chapters, so
+  // editing a day means adjusting the plan rather than rebuilding it.
   await evaluate(c, `
     const b = [...document.querySelectorAll('#view button[data-mode]')].find((x) => x.dataset.mode === 'picks');
     b.click();
     return true;`);
-  await sleep(500);
-  const total = await evaluate(c, `
+  await sleep(600);
+  const seeded = await evaluate(c, `
+    const st = JSON.parse(localStorage.getItem('ioe-planner:state'));
+    const d = new Date(); const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    const picks = st.overrides.todayPicks[iso] || [];
     const boxes = [...document.querySelectorAll('#view input[data-topic-key]')];
-    const det = boxes[0].closest('details');
-    if (det) det.open = true;
-    return boxes.length;`);
-  ok(total > 20, `every topic is offered (${total} topics)`);
+    return { picks, ticked: boxes.filter((b) => b.checked).map((b) => b.dataset.topicKey), total: boxes.length };`);
+  ok(seeded.picks.length > 0, `the day opens with the planner's chapters already chosen (${JSON.stringify(seeded.picks)})`);
+  ok(seeded.ticked.length === seeded.picks.length,
+    `every pre-filled chapter shows as ticked in the real DOM (${seeded.ticked.length} ticked of ${seeded.total} boxes)`);
+  ok(await evaluate(c, `
+    return /of .+ planned/i.test(document.getElementById('view').innerText);`),
+    'the selection compares itself against the budget for the day');
 
-  const keys = [];
+  // Real click on a real checkbox, inside a collapsed <details>. The node has
+  // to be re-queried after each click, because ticking re-renders the view and
+  // the old element is detached - which is exactly what a real user sees.
+  const added = [];
   for (let i = 0; i < 2; i++) {
-    keys.push(await evaluate(c, `
-      const box = [...document.querySelectorAll('#view input[data-topic-key]')].filter((x) => !x.checked)[0];
+    added.push(await evaluate(c, `
+      const boxes = [...document.querySelectorAll('#view input[data-topic-key]')];
+      const box = boxes.filter((x) => !x.checked)[0];
+      const det = box.closest('details');
+      if (det) det.open = true;
       const k = box.dataset.topicKey;
       box.click();
       return k;`));
     await sleep(450);
   }
-
   const stored = await evaluate(c, `
     const st = JSON.parse(localStorage.getItem('ioe-planner:state'));
     const d = new Date(); const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-    return { picks: st.overrides.todayPicks[iso], mode: st.settings.planStyle };`);
-  ok(Array.isArray(stored.picks) && stored.picks.length === 2,
-    `two picks were saved by the real click (${JSON.stringify(stored.picks)})`);
-  ok(stored.picks[0] === keys[0] && stored.picks[1] === keys[1],
-    'they are saved in the order they were ticked');
+    return { picks: st.overrides.todayPicks[iso] };`);
+  ok(Array.isArray(stored.picks) && stored.picks.length === seeded.picks.length + 2,
+    `the real clicks were added to the pre-filled set (${JSON.stringify(stored.picks)})`);
+  for (const k of added) ok(stored.picks.includes(k), `the clicked chapter ${k} is stored`);
 
   // The chosen topics must actually be what the day plans, and must lead it.
-  const planned = await evaluate(c, `
-    const rows = [...document.querySelectorAll('#view .task-card, #view [data-task-type]')];
-    return document.getElementById('view').innerText;`);
+  const planned = await evaluate(c, 'return document.getElementById("view").innerText;');
   ok(/You chose this for today/i.test(planned), 'the day says the topics were chosen by hand');
 
-  // Random mode, proven to differ from the planner's own ordering.
-  await evaluate(c, `
-    const b = [...document.querySelectorAll('#view button[data-mode]')].find((x) => x.dataset.mode === 'shuffle');
-    b.click();
-    return true;`);
+  // Removing one must shrink the day, not add anything.
+  const removed = await evaluate(c, `
+    const box = [...document.querySelectorAll('#view input[data-topic-key]')].find((x) => x.checked);
+    const k = box.dataset.topicKey;
+    box.click();
+    return k;`);
   await sleep(500);
-  const shuf = await evaluate(c, `
-    const st = JSON.parse(localStorage.getItem('ioe-planner:state'));
-    return { style: st.settings.planStyle, btn: !!([...document.querySelectorAll('#view button')].find((x) => /Shuffle again/.test(x.textContent))) };`);
-  ok(shuf.style === 'shuffle', 'random mode is stored');
-  ok(shuf.btn, 'and "shuffle again" is offered');
-  await evaluate(c, `
-    const b = [...document.querySelectorAll('#view button')].find((x) => /Shuffle again/.test(x.textContent));
-    b.click(); return true;`);
-  await sleep(400);
-  const nonce = await evaluate(c, `
+  const after = await evaluate(c, `
     const st = JSON.parse(localStorage.getItem('ioe-planner:state'));
     const d = new Date(); const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-    return st.overrides.shuffleNonce[iso] || 0;`);
-  ok(nonce >= 1, `shuffling again re-draws the day (nonce ${nonce})`);
+    return st.overrides.todayPicks[iso];`);
+  ok(!after.includes(removed), `unticking ${removed} removes it from the day`);
 }
 
 section('6. The app persists across a real reload');

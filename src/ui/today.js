@@ -10,6 +10,7 @@
 import { el } from '../util/dom.js';
 import { todayISO, addDays, relDayLabel, fmtDate, fmtMinutes } from '../util/dates.js';
 import { OUTCOMES, OUTCOME_LABEL, picksForDate, pickModeForDate } from '../core/planner.js';
+import { estMinutesFor } from '../core/model.js';
 import { update, openModal, app, statCard, emptyState, barRow, logTask, undoSessions } from '../app.js';
 
 const TYPE_LABEL = {
@@ -93,6 +94,14 @@ export function renderToday(a) {
  * work still run, because those are outstanding obligations rather than new
  * reading.
  */
+/**
+ * What to study.
+ *
+ * Two modes only. "My chapters" opens with the planner's own chapters already
+ * ticked, so editing a day means adjusting the plan rather than rebuilding it
+ * from an empty list. The selected total is shown against the plan's own total,
+ * and being under it is fine - the day simply shrinks to fit.
+ */
 function chooseTodayCard(a, date, day) {
   const st = a.state;
   const picks = picksForDate(st, date);
@@ -100,99 +109,103 @@ function chooseTodayCard(a, date, day) {
   const c = el('div', { class: 'card' });
 
   c.append(el('div', { class: 'title' }, 'What to study'));
-  c.append(el('p', { class: 'small muted', style: 'margin:4px 0 10px' },
-    'Choose your own chapters for this day, or let it be picked for you.'));
 
-  if (mode === 'shuffle') {
-    c.append(el('p', { class: 'small', style: 'margin:0 0 10px;color:var(--ink-3)' },
-      'Today was randomised: still-needed topics were drawn at random rather than by urgency.'));
-  }
-
-  if (mode === 'picks' && !picks.length) {
-    c.append(el('p', { class: 'small', style: 'margin:0 0 10px;color:var(--high)' },
-      'Nothing selected yet, so today still follows the planner. Tick at least one topic below, or switch back to the planner\'s choice.'));
-  }
-
-  if (mode === 'picks' && day && day.picksMissed && day.picksMissed.length) {
-    const names = day.picksMissed.map((k) => {
-      const [, tid] = k.split('::');
-      const t = a.index.topics.find((x) => x.id === tid);
-      return t ? t.title : k;
-    });
-    c.append(el('p', { class: 'small', style: 'margin:0 0 10px;color:var(--high)' },
-      `Could not fit today: ${names.join('; ')}. Shorten the list or give the day more time.`));
-  }
-
-  const bar = el('div', { class: 'row wrap', style: 'gap:6px;margin-bottom:10px' });
-
-  const opt = (key, label, hint) => {
-    const b = el('button', {
-      class: `sm ${mode === key ? 'primary' : 'ghost'}`,
-      'aria-pressed': mode === key ? 'true' : 'false',
-      'data-mode': key,
-      title: hint,
-      onclick: () => {
-        update((s) => {
-          if (!s.overrides.todayPicks) s.overrides.todayPicks = {};
-          if (key === 'picks') {
-            if (!s.overrides.todayPicks[date]) s.overrides.todayPicks[date] = [];
-          } else {
-            // Leaving "my picks" must also leave the automatic choice intact,
-            // so clear the selection rather than leaving it silently active.
-            delete s.overrides.todayPicks[date];
-            s.settings.planStyle = key === 'shuffle' ? 'shuffle' : 'auto';
-          }
-        });
-      },
-    }, label);
-    return b;
-  };
-
-  bar.append(opt('auto', 'Planner\'s choice'));
-  bar.append(opt('shuffle', 'Random'));
-  bar.append(opt('picks', 'My picks'));
+  const bar = el('div', { class: 'row wrap', style: 'gap:6px;margin:8px 0 10px' });
+  const opt = (key, label, hint) => el('button', {
+    class: `sm ${mode === key ? 'primary' : 'ghost'}`,
+    'aria-pressed': mode === key ? 'true' : 'false',
+    'data-mode': key,
+    title: hint,
+    onclick: () => update((s) => {
+      if (!s.overrides.todayPicks) s.overrides.todayPicks = {};
+      if (key === 'picks') {
+        // Open on the planner's own chapters rather than an empty list. An
+        // empty array counts as "not chosen yet": re-entering the mode should
+        // refill it, otherwise the picker would come back blank forever.
+        const cur = s.overrides.todayPicks[date];
+        if (!cur || !cur.length) {
+          s.overrides.todayPicks[date] = plannedChapterKeys(a, date);
+        }
+      } else {
+        delete s.overrides.todayPicks[date];
+      }
+    }),
+  }, label);
+  bar.append(opt('auto', 'Planner\'s choice', 'The planner picks the chapters.'));
+  bar.append(opt('picks', 'My chapters', 'Start from the plan and swap what you like.'));
   c.append(bar);
 
-  if (mode === 'shuffle') {
-    const r = el('div', { class: 'row wrap', style: 'gap:8px' });
-    r.append(el('span', { class: 'small muted', style: 'flex:1' },
-      'Still-needed topics are picked at random for this day. Due revisions and the daily time limit are unaffected.'));
-    r.append(el('button', {
-      class: 'sm ghost',
-      onclick: () => update((s) => {
-        if (!s.overrides.shuffleNonce) s.overrides.shuffleNonce = {};
-        s.overrides.shuffleNonce[date] = (s.overrides.shuffleNonce[date] || 0) + 1;
-      }),
-    }, 'Shuffle again'));
-    c.append(r);
+  if (mode !== 'picks') {
+    c.append(el('p', { class: 'small muted', style: 'margin:0' },
+      'The planner chose these chapters. Switch to "My chapters" to swap any of them.'));
+    return c;
   }
 
-  if (mode === 'picks') {
-    // Progress must come from the freshly derived plan, not `state.days`.
-    // commitPlan deliberately does not mirror picksDone, and state.days wins
-    // the lookup at the top of this view, so reading it from there pinned the
-    // counter at 0 forever.
-    const live = a.plan.plan[date];
-    const num = (v) => (typeof v === 'number' ? v : null);
-    const done = num(live?.picksDone) ?? num(day?.picksDone) ?? 0;
-    const miss = (live?.picksMissed || day?.picksMissed || []).length;
-    c.append(el('div', { class: 'row small muted', style: 'margin-bottom:8px;gap:10px' },
-      el('span', {},
-        picks.length
-          ? `${done} of ${picks.length} picked topic${picks.length === 1 ? '' : 's'} done today`
-          : 'Nothing selected yet'),
-      miss ? el('span', { style: 'color:var(--high)' }, `${miss} did not fit today`) : null,
-      picks.length
-        ? el('button', {
-            class: 'sm ghost',
-            onclick: () => update((s) => { delete s.overrides.todayPicks[date]; }),
-          }, 'Clear')
-        : null,
-    ));
-    c.append(topicPicker(a, date, picks));
+  const live = a.plan.plan[date];
+  const num = (v) => (typeof v === 'number' ? v : null);
+  const done = num(live?.picksDone) ?? num(day?.picksDone) ?? 0;
+
+  // Totals for the current selection, so "how long is my day" is answerable
+  // without reading the task list. The comparison is against the day's own
+  // time budget, not against the plan: in picks mode the plan *is* the picks,
+  // so comparing to it would only ever report the student their own choices.
+  const sel = selectionTotals(a, picks);
+  const available = num(day?.availableMin) ?? num(live?.availableMin) ?? 0;
+
+  const meter = el('div', { class: 'row wrap small', style: 'gap:12px;margin-bottom:8px;align-items:baseline' });
+  meter.append(el('span', { style: 'font-weight:600' },
+    `${picks.length} chapter${picks.length === 1 ? '' : 's'} · ${fmtMinutes(sel.minutes)}`));
+  if (available) {
+    meter.append(el('span', { class: 'muted' }, `of ${fmtMinutes(available)} planned`));
+  }
+  if (picks.length) {
+    meter.append(el('span', { class: 'muted' }, `${done} done today`));
+  }
+  c.append(meter);
+
+  if (picks.length && available && sel.minutes < available) {
+    c.append(el('p', { class: 'small muted', style: 'margin:0 0 8px' },
+      `${fmtMinutes(available - sel.minutes)} short of the day's ${fmtMinutes(available)}. The day will just be shorter - the time is left free rather than filled with chapters you did not ask for.`));
+  } else if (picks.length && available && sel.minutes > available) {
+    c.append(el('p', { class: 'small', style: 'margin:0 0 8px;color:var(--ink-3)' },
+      `That is ${fmtMinutes(sel.minutes - available)} over the day's ${fmtMinutes(available)}. Your chapters are still scheduled, and the rest carries into the next day.`));
   }
 
+  c.append(topicPicker(a, date, picks));
   return c;
+}
+
+/** The learn chapters the planner already scheduled for this date. */
+function plannedChapterKeys(a, date) {
+  const day = a.plan.plan[date];
+  if (!day) return [];
+  const seen = new Set();
+  const out = [];
+  for (const t of day.tasks || []) {
+    if (t.type !== 'learn') continue;
+    const key = `${t.unitId}::${t.topicId || t.itemId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+/** Minutes and chapter count for a set of picked chapter keys. */
+function selectionTotals(a, picks) {
+  let minutes = 0;
+  for (const key of picks) {
+    const [unitId, topicId] = key.split('::');
+    const unit = a.index.units.find((u) => u.id === unitId);
+    if (!unit) continue;
+    const left = unit.itemIds.reduce((sum, id) => {
+      const rec = a.state.items[id] || {};
+      const est = rec.estMinOverride || estMinutesFor(a.state, a.index.byId.get(id));
+      return sum + Math.max(0, Math.round(est * (1 - (rec.progressPct || 0) / 100)));
+    }, 0);
+    minutes += left;
+  }
+  return { minutes };
 }
 
 /** Subject-collapsible list of topics for one date. */

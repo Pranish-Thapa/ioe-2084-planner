@@ -646,52 +646,72 @@ section('17b. Every view has a permanent way back to the dashboard');
 
 /* ================================================================== */
 
-section('18. You choose the day, or ask for a random one');
+section('18. You choose the chapters, or leave them to the planner');
 {
   const today = todayISO();
   go('#/today');
 
   ok(/What to study/.test(allText()), 'the Today view lets you choose what to study');
   const modes = [...nodes.get('view').walk()].filter((n) => n.tagName === 'BUTTON' && n.getAttribute('data-mode'));
-  eq(modes.map((m) => m.getAttribute('data-mode')).join(','), 'auto,shuffle,picks',
-    'all three ways of choosing a day are offered');
+  eq(modes.map((m) => m.getAttribute('data-mode')).join(','), 'auto,picks',
+    'exactly two modes: the planner\'s choice and mine');
+  ok(!/Shuffle again/.test(allText()), 'the random-day control is gone');
+  ok(!findButtons((x) => /Random|Shuffle/.test(x.textContent)).length, 'and no random button remains');
 
-  // --- random ----------------------------------------------------------
-  const shuffleBtn = modes.find((m) => m.getAttribute('data-mode') === 'shuffle');
-  click(shuffleBtn);
-  eq(app.state.settings.planStyle, 'shuffle', 'choosing "Random" switches the plan style');
-  ok(/Shuffle again/.test(allText()), 'and offers to draw a different day');
-  const nonceBefore = (app.state.overrides.shuffleNonce || {})[today] || 0;
-  click(findButtons((x) => /Shuffle again/.test(x.textContent))[0]);
-  eq((app.state.overrides.shuffleNonce || {})[today] || 0, nonceBefore + 1,
-    '"shuffle again" re-draws the day');
+  // --- planner's choice --------------------------------------------------
+  const plannedLearn = (app.plan.plan[today].tasks || []).filter((t) => t.type === 'learn');
+  ok(plannedLearn.length > 0, 'the planner has chosen chapters for today');
+  const plannedKeys = plannedLearn.map((t) => `${t.unitId}::${t.topicId}`);
 
-  // Back to the default.
-  click([...nodes.get('view').walk()].find((n) => n.getAttribute('data-mode') === 'auto'));
-  eq(app.state.settings.planStyle, 'auto', 'the planner\'s own choice can be restored');
-
-  // --- hand-picked -----------------------------------------------------
+  // --- my chapters: opens pre-filled, not empty --------------------------
   click([...nodes.get('view').walk()].find((n) => n.getAttribute('data-mode') === 'picks'));
-  const boxes = [...nodes.get('view').walk()].filter((n) => n.tagName === 'INPUT' && n.getAttribute('type') === 'checkbox');
-  ok(boxes.length > 20, `every topic is offered for picking (${boxes.length} topics listed)`);
-
-  const chosen = boxes.slice(0, 2);
-  for (const b of chosen) {
-    b.checked = true;
-    b.dispatch('change', { target: b, preventDefault() {}, stopPropagation() {} });
+  const seeded = app.state.overrides.todayPicks[today] || [];
+  ok(seeded.length === plannedKeys.length,
+    `switching to "My chapters" pre-fills the planner's ${plannedKeys.length} chapters (got ${seeded.length})`);
+  for (const k of plannedKeys) {
+    ok(seeded.includes(k), `the planner's own chapter is pre-ticked (${k})`);
   }
-  const stored = app.state.overrides.todayPicks[today] || [];
-  eq(stored.length, 2, 'ticking a topic stores it as a pick for today');
-  ok(stored.includes(chosen[0].getAttribute('data-topic-key')), 'the pick is keyed by the topic the student saw');
-  ok(/You chose this for today/.test(allText()) || app.state.days[today].tasks.some((t) => t.picked),
-    'and the chosen topic is what the day plans');
+
+  // The totals line is what answers "how long is my day".
+  const txt = allText();
+  ok(/\d+ chapters? · \d+h|\d+ chapters? · \d+m/.test(txt.replace(/\u00a0/g, ' ')),
+    `the selection shows its chapter count and minutes (${txt.match(/\d+ chapters? · [^\n]*/)?.[0] || 'none'})`);
+  ok(/of .+ planned/.test(txt), 'and compares itself against the budget for the day');
+
+  // --- unticking shrinks the day, it does not add chapters ---------------
+  const boxes = [...nodes.get('view').walk()].filter((n) => n.tagName === 'INPUT' && n.getAttribute('type') === 'checkbox');
+  ok(boxes.length > 20, `every topic is offered for picking (${boxes.length} listed)`);
+  const beforeKeys = (app.state.overrides.todayPicks[today] || []).slice();
+  const drop = boxes.find((b) => beforeKeys.includes(b.getAttribute('data-topic-key')));
+  drop.checked = false;
+  drop.dispatch('change', { target: drop, preventDefault() {}, stopPropagation() {} });
+  const afterKeys = app.state.overrides.todayPicks[today] || [];
+  eq(afterKeys.length, beforeKeys.length - 1, 'unticking a chapter removes it from the day');
+  ok(!afterKeys.includes(drop.getAttribute('data-topic-key')), 'and it is no longer planned');
+
+  // Fewer picks than the plan is explicitly allowed, and must not be padded.
+  ok(/short of the day|left free/.test(allText()) || afterKeys.length < plannedKeys.length,
+    'going under the planned amount is accepted, not blocked');
+
+  // A pick the student makes is the chapter the day plans.
+  const fresh = boxes.find((b) => !afterKeys.includes(b.getAttribute('data-topic-key')));
+  fresh.checked = true;
+  fresh.dispatch('change', { target: fresh, preventDefault() {}, stopPropagation() {} });
+  const nowKeys = app.state.overrides.todayPicks[today] || [];
+  ok(nowKeys.includes(fresh.getAttribute('data-topic-key')), 'ticking a chapter stores it as a pick');
+  const plannedNow = (app.plan.plan[today].tasks || []).filter((t) => t.type === 'learn');
+  ok(plannedNow.every((t) => nowKeys.includes(`${t.unitId}::${t.topicId}`)),
+    'and every planned chapter is one the student actually chose');
 
   // Picks are per-day, never global.
   eq((app.state.overrides.todayPicks[addDays(today, 1)] || []).length, 0,
-    "a pick is scoped to today only");
+    'a pick is scoped to today only');
 
-  click(findButtons((x) => /Clear/.test(x.textContent))[0]);
-  eq((app.state.overrides.todayPicks[today] || []).length, 0, 'the picks can be cleared');
+  // --- back to the planner ------------------------------------------------
+  click([...nodes.get('view').walk()].find((n) => n.getAttribute('data-mode') === 'auto'));
+  eq(app.state.overrides.todayPicks[today], undefined, 'the planner\'s choice can be restored');
+  ok((app.plan.plan[today].tasks || []).some((t) => t.type === 'learn'),
+    'and the day still has chapters in it');
 }
 
 section('21. Partial progress is visible without expanding a chapter');
@@ -747,7 +767,7 @@ section('22. The picked-topic counter is read from the live plan, not the mirror
     'the committed mirror genuinely has no picksDone (the trap)');
 
   go('#/today');
-  ok(/of 1 picked topic done today/.test(allText()), 'the card renders the counter before any work');
+  ok(/1 chapter/.test(allText()) && /planned/.test(allText()), 'the card renders its totals before any work');
 
   // Now finish the pick for real, the way the app does: mutate, recompute, commit.
   const id = topic.itemIds[0];
@@ -763,7 +783,7 @@ section('22. The picked-topic counter is read from the live plan, not the mirror
   eq(app.state.days[today].picksDone, undefined, 'but the mirror still does not');
 
   go('#/today');
-  ok(/1 of 1 picked topic done today/.test(allText()),
+  ok(/1 done today/.test(allText()),
     'and the view shows the finished count rather than a stuck 0');
 
   delete app.state.overrides.todayPicks[today];

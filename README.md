@@ -25,7 +25,7 @@ opening the files through a local server. Do **not** open `index.html` with a
 from the filesystem.
 
 ```bash
-npm test           # engine suite + UI suite (1057 assertions)
+npm test           # engine suite + UI suite (1102 assertions)
 npm run test:engine
 npm run test:ui
 npm run validate   # syllabus database self-check
@@ -37,7 +37,7 @@ There is a third suite that needs a real browser, so it is not part of
 ```bash
 npm start                                    # in one terminal
 edge --headless=new --remote-debugging-port=9222   # in another
-npm run test:browser                         # 95 assertions
+npm run test:browser                         # 97 assertions
 ```
 
 `tests/browser.test.js` drives the app over the DevTools protocol: it finishes
@@ -75,14 +75,26 @@ backlog on one day is not planning, it is pretending.
 **You choose the day, or you let it be chosen for you.** Ranking by urgency is
 a good default, but it means the same few chapters keep winning, which is no use
 if you need something specific today. Today's Plan has a **What to study** card
-with three options:
+with two options:
 
 - **Planner's choice** — the existing urgency ranking.
-- **Random** — still-needed topics are drawn at random for that day, so the day
-  is not always the same chapters. The draw is seeded by the date, so it cannot
-  reshuffle under you mid-session, and **Shuffle again** re-draws it.
-- **My picks** — tick the exact topics you want. They are scheduled first, in
-  the order you ticked them, and no unrequested chapter is added alongside them.
+- **My chapters** — opens with the planner's own chapters already ticked, so you
+  adjust the day rather than rebuild it from a blank list. Tick and untick
+  freely: your selection is scheduled first, in the order you chose it, and
+  **a chapter you picked is never dropped** to make the day fit. Coming in over
+  the day's minutes is allowed and shown honestly; coming in under simply makes
+  the day shorter. No unrequested chapter is ever added alongside your choices,
+  though spare time may go to revisions or practice you already had due.
+
+There is no random mode. A plan you cannot explain is a plan you will not trust.
+A state saved by an older version still loads and is planned as a normal day.
+
+**Clicking Done means the chapter is done.** It finishes the whole chapter the
+block covered - not just the slice of it that fitted in one block - and puts
+every one of its subtopics into the spaced-revision schedule with its next due
+date. An estimate is not work, so a 66-minute chapter planned as a 60-minute
+block does not sit at 91% waiting for a tail you never asked for. Partial
+sessions and custom minute logs still record exactly what you did.
 
 Picks are scoped to the single date you made them on. Nothing about picking a
 topic for today changes any other day. Your chapters get first claim on the
@@ -128,7 +140,7 @@ progress instead of just deleting the log line.
 | View | What it is for |
 | --- | --- |
 | Dashboard | Risk verdict, countdown, required daily pace, what to work on next |
-| Today's Plan | The day's blocks, logging outcomes, unlogged sessions from the past, **Start tomorrow instead** — one click blocks today and shifts its work on, with an undo — and **What to study**: hand-pick your own chapters, or ask for a randomised day |
+| Today's Plan | The day's blocks, logging outcomes, unlogged sessions from the past, **Start tomorrow instead** — one click blocks today and shifts its work on, with an undo — and **What to study**: hand-pick your own chapters, starting from the plan and swapping what you like |
 | Syllabus | Per-subtopic status, your time and difficulty estimates, pin and skip, chapter ETAs |
 | Calendar | Month grid of load and phase; spots runs of empty days and walls of exam-period days |
 | Practice | 40 syllabus-mapped MCQs, by due-for-revision set, weak topics, chapter, or subject |
@@ -175,10 +187,10 @@ src/
   ui/                 one module per view
   util/               DOM helpers, date helpers
 tests/
-  engine.test.js      828 assertions, no DOM required
-  ui.test.js          221 assertions, renders every view for real
+  engine.test.js      866 assertions, no DOM required
+  ui.test.js          236 assertions, renders every view for real
   dom-shim.mjs        minimal DOM so the UI can be tested headless
-  browser.test.js     95 assertions, drives real headless Edge
+  browser.test.js     97 assertions, drives real headless Edge
 ```
 
 ## Honest limitations
