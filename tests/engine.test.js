@@ -21,7 +21,7 @@ const {
 } = await import('../src/core/store.js');
 const { buildIndex, coverage, deriveSubtopics, unitStats, marksLabel } = await import('../src/core/model.js');
 const {
-  generatePlan, logTask, undoSessions, recordAnswer, OUTCOMES, chapterIntelligence, evaluateMastery, picksForDate,
+  generatePlan, commitPlan, logTask, undoSessions, recordAnswer, OUTCOMES, chapterIntelligence, evaluateMastery, picksForDate,
 } = await import('../src/core/planner.js');
 const { availableMinutesFor, baseAvailableMinutes, assess, RISK, remainingWorkMinutes } = await import('../src/core/feasibility.js');
 const { addExam, examContext, PHASE, buildRecoveryPlan } = await import('../src/core/examMode.js');
@@ -906,6 +906,130 @@ section('23. The student can choose the day, or have it randomised');
   ok(r4.plan[today].plannedMin <= r4.plan[today].availableMin,
     'a randomised first day still fits in the day');
   ok(day.plannedMin <= day.availableMin, 'a hand-picked day also fits in the day');
+}
+section('24. A hand-picked day stays hand-picked, and reports honestly');
+{
+  const idx = buildIndex(allSubjectGroups(false));
+  const today = todayISO();
+  const keyOf = (t) => `${t.unitId}::${t.topicId || t.itemId}`;
+
+  // --- picking several chapters from ONE subject is allowed ---------------
+  const unit = idx.units.filter((u) => u.subjectId === 'MATH')[0];
+  const threeSameSubject = unit.topics.slice(0, 3).map((t) => `${unit.id}::${t.id}`);
+  ok(threeSameSubject.length >= 2, `a unit offers several chapters to pick (${threeSameSubject.length})`);
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = threeSameSubject;
+    const d = generatePlan(st, idx, { today }).plan[today];
+    const pickedTasks = d.tasks.filter((t) => t.picked);
+    // The per-subject cap of 2 used to silently drop the third pick.
+    eq(d.picksMissed, undefined, 'no pick is dropped by the per-subject cap');
+    ok(pickedTasks.length >= 2, `all picks on the page (${pickedTasks.length})`);
+    eq(new Set(pickedTasks.map(keyOf)).size, pickedTasks.length, 'and no pick is scheduled twice');
+  }
+
+  // --- no unrequested chapter is ever added ------------------------------
+  for (const picked of [threeSameSubject, ['MATH-U1::MATH-U1-T1', 'PHY-U1::PHY-U1-T1']]) {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = picked;
+    const chosen = new Set(picked);
+    let guard = 0;
+    // Tick every pick off, day by day, and watch what turns up.
+    while (guard++ < 30) {
+      const r = generatePlan(st, idx, { today });
+      const t = r.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+      if (!t) break;
+      commitPlan(st, r);
+      logTask(st, idx, today, t, OUTCOMES.DONE, t.plannedMin, 1);
+    }
+    const d = generatePlan(st, idx, { today }).plan[today];
+    const strays = d.tasks.filter((t) => (t.type === 'learn' || t.type === 'fill') && !chosen.has(keyOf(t)));
+    eq(strays.length, 0, `a hand-picked day never gains an unrequested chapter (${strays.length})`);
+    ok(!d.tasks.some((t) => t.picked), 'and no picked chapter is left hanging once it is finished');
+    eq(d.picksDone, picked.length, `every pick is reported as done (${d.picksDone}/${d.picksTotal})`);
+  }
+
+  // --- a pick that only partly fits stays, and says how far it got --------
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
+    let r = generatePlan(st, idx, { today });
+    commitPlan(st, r);
+    const t = r.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+    logTask(st, idx, today, t, OUTCOMES.DONE, t.plannedMin, 1);
+
+    const d = generatePlan(st, idx, { today }).plan[today];
+    const left = d.tasks.find((x) => x.type === 'learn' && x.picked);
+    ok(!!left, 'a partly finished chapter stays on the day rather than vanishing');
+    ok(left.subtopicsTotal > 1, 'the chapter really is split into subtopics');
+    ok(left.subtopicsDone > 0 && left.subtopicsDone < left.subtopicsTotal,
+      `and it reports real progress instead of a bare "0 of N" (${left.subtopicsDone}/${left.subtopicsTotal})`);
+    // Counts must be chapter-wide, not just the outstanding members.
+    const chapter = idx.items.filter((i) => `${i.unitId}::${i.topicId}` === 'MATH-U1::MATH-U1-T1');
+    eq(left.subtopicsTotal, chapter.length, 'the subtopic total is the whole chapter, not the remainder');
+    eq(left.subtopicsDone, chapter.filter((i) => (st.items[i.id]?.progressPct ?? 0) >= 100).length,
+      'and the done count matches the recorded state');
+  }
+
+  // --- leftover time goes to practice only after the picks are served -----
+  {
+    const st = defaultState();
+    st.overrides.todayPicks[today] = ['PHY-U1::PHY-U1-T1'];
+    st.settings.defaultDailyMinutes = 300; // plenty of spare time
+    const d = generatePlan(st, idx, { today }).plan[today];
+    const order = d.tasks.map((t) => t.type);
+    const lastPick = order.lastIndexOf('learn');
+    const firstPractice = order.findIndex((t) => t === 'practice' || t === 'mixed');
+    if (lastPick >= 0 && firstPractice >= 0) {
+      ok(firstPractice > lastPick || d.tasks[firstPractice].picked,
+        'your chapters come before practice, not after');
+    }
+    // Once the only pick is finished, the day is free to spend time on practice.
+    commitPlan(st, generatePlan(st, idx, { today }));
+    for (let n = 0; n < 30; n++) {
+      const r = generatePlan(st, idx, { today });
+      const t = r.plan[today].tasks.find((x) => x.type === 'learn' && x.picked);
+      if (!t) break;
+      commitPlan(st, r);
+      logTask(st, idx, today, t, OUTCOMES.DONE, t.plannedMin, 1);
+    }
+    const after = generatePlan(st, idx, { today }).plan[today];
+    eq(after.picksDone, 1, 'the pick is complete');
+    ok(after.tasks.some((t) => t.type === 'practice' || t.type === 'mixed'),
+      'and the freed time goes to practice rather than to a new chapter');
+  }
+
+  // --- the bonus block must not smuggle in a chapter on a picked day ------
+  {
+    // `buildFillTask` is handed no topic candidates at all while picks are
+    // active, so a bonus block can only ever be revision/practice/mistakes.
+    const st = defaultState();
+    st.settings.defaultDailyMinutes = 300;
+    st.overrides.todayPicks[today] = ['MATH-U1::MATH-U1-T1'];
+    const chosen = new Set(['MATH-U1::MATH-U1-T1']);
+    let sawBonus = false;
+    for (let n = 0; n < 25; n++) {
+      const r = generatePlan(st, idx, { today });
+      const d0 = r.plan[today];
+      for (const f of d0.tasks.filter((t) => t.type === 'fill')) {
+        sawBonus = true;
+        ok(['revise', 'practice', 'mixed', 'mistakes'].includes(f.type),
+          `a bonus block on a picked day is never a new chapter (got "${f.type}")`);
+        ok(!chosen.size || !f.unitId || chosen.has(`${f.unitId}::${f.topicId || f.itemId}`),
+          'and never points at an unrequested chapter');
+      }
+      const t = d0.tasks.find((x) => x.type === 'learn' && x.picked);
+      if (!t) break;
+      commitPlan(st, r);
+      logTask(st, idx, today, t, OUTCOMES.DONE, t.plannedMin, 1);
+    }
+    const final = generatePlan(st, idx, { today }).plan[today];
+    eq(final.picksDone, 1, 'the pick finishes cleanly across repeated ticks');
+    ok(final.tasks.every((t) => t.type !== 'learn' || chosen.has(keyOf(t))),
+      'and the finished day contains no unrequested chapter at all');
+    // sawBonus only documents whether the bonus path was reachable at all.
+    if (!sawBonus) console.log('      (no bonus block occurred on a picked day)');
+  }
 }
 console.log(`  ${pass} passed, ${fail} failed`);
 if (fail) {

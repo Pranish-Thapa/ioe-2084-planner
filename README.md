@@ -25,7 +25,7 @@ opening the files through a local server. Do **not** open `index.html` with a
 from the filesystem.
 
 ```bash
-npm test           # engine suite + UI suite (1009 assertions)
+npm test           # engine suite + UI suite (1029 assertions)
 npm run test:engine
 npm run test:ui
 npm run validate   # syllabus database self-check
@@ -85,10 +85,19 @@ with three options:
   the order you ticked them, and no unrequested chapter is added alongside them.
 
 Picks are scoped to the single date you made them on. Nothing about picking a
-topic for today changes any other day. Due revisions, practice and mistake-bank
-work still appear, because those are outstanding obligations rather than new
-reading — what changes is which new chapters you are asked to read. If a pick
-cannot fit in the day's time, the plan names it rather than quietly dropping it.
+topic for today changes any other day. Your chapters get first claim on the
+day's minutes; practice only takes what is genuinely left over. Picking three
+chapters from one subject is fine — the per-subject cap that stops the
+automatic choice from proposing the same subject all day does not apply to a
+chapter you chose yourself. Due revisions, practice and mistake-bank work still
+appear, because those are outstanding obligations rather than new reading.
+
+The day also reports what it is doing. The picks card shows how many of your
+topics it expects to finish today, and a chapter task shows `4 of 7 subtopics
+done`, because a chapter is split into subtopics and one block often leaves
+some of them untouched. A chapter that is genuinely finished is marked complete
+rather than being left stranded at 98%; if a pick cannot fit in the day's time,
+the plan names it rather than quietly dropping it.
 
 **Time estimates start as guesses and get corrected.** A subtopic's estimate
 comes from its topic's size and difficulty, and every real session updates it:
@@ -166,7 +175,7 @@ src/
   ui/                 one module per view
   util/               DOM helpers, date helpers
 tests/
-  engine.test.js      788 assertions, no DOM required
+  engine.test.js      808 assertions, no DOM required
   ui.test.js          221 assertions, renders every view for real
   dom-shim.mjs        minimal DOM so the UI can be tested headless
   browser.test.js     95 assertions, drives real headless Edge

@@ -131,7 +131,16 @@ export function pickModeForDate(state, dateISO) {
   return state.settings.planStyle === 'shuffle' ? 'shuffle' : 'auto';
 }
 
-function groupTopics(state, index, sim, ctx, limit = 10) {
+/**
+ * Group unfinished subtopics into chapters.
+ *
+ * `minLeft` is the floor on minutes remaining before a chapter is worth a
+ * block at all — small enough leftovers are not worth a token task. A
+ * hand-picked chapter passes 0 instead, because a chapter the student
+ * explicitly asked for has to be finishable: with the floor applied, a chapter
+ * one minute short is invisible forever and silently never completes.
+ */
+function groupTopics(state, index, sim, ctx, limit = 10, minLeft = 8) {
   const groups = new Map();
   for (const item of index.items) {
     const r = simGet(sim, item.id);
@@ -160,7 +169,7 @@ function groupTopics(state, index, sim, ctx, limit = 10) {
     // take the most urgent subtopic rather than averaging it away.
     g.score = Math.max(g.score, needScore(state, index, sim, item, ctx));
   }
-  const out = [...groups.values()].filter((g) => g.left >= 8);
+  const out = [...groups.values()].filter((g) => g.left >= minLeft);
   if (ctx.shuffleSeed != null) {
     // Randomise the order, then still prefer the most urgent when the budget
     // cannot take everything: the day varies, the plan never becomes reckless.
@@ -371,6 +380,14 @@ function mkLearnTask(state, index, sim, group, minutes, ctx, date) {
   );
   const endPct = Math.min(100, Math.round(startPct + (chunk / Math.max(1, group.left)) * (100 - startPct)));
   const names = group.members.map((m) => m.title);
+  // A chapter is split into subtopics, so finishing a block can leave some of
+  // them untouched. Counted across the whole chapter, not just the ones still
+  // outstanding: reporting "0 of 3" while the chapter is actually 4/7 done reads
+  // as though the work was ignored.
+  const chapterMembers = index.items.filter((i) => topicKeyOf(i) === group.key);
+  const subtopicsDone = chapterMembers
+    .filter((m) => simGet(sim, m.id).progressPct >= 100).length;
+  const subtopicsTotal = chapterMembers.length || group.members.length;
 
   return {
     ...baseTask(lead, date, 'learn'),
@@ -383,6 +400,8 @@ function mkLearnTask(state, index, sim, group, minutes, ctx, date) {
     progressBefore: r.progressPct,
     progressAfter: endPct,
     chapterProgress: startPct,
+    subtopicsDone,
+    subtopicsTotal,
     subtopics: names,
     detail: `${names.length > 1 ? `Cover ${names.length} part${names.length > 1 ? 's' : ''}: ${names.join(', ')}.` : `Work through "${names[0]}".`} Then solve ${mcq} MCQs.`,
     reason: resumed
@@ -743,11 +762,14 @@ export function generatePlan(state, index, opts = {}) {
     let budget = cap;
     const perSubjectCap = 2;
 
-    const add = (task) => {
+    const add = (task, opts = {}) => {
       if (!task || task.plannedMin <= 0) return false;
       if (budget < task.plannedMin - 0.5) return false;
       if (task.type === 'learn' || task.type === 'revise' || task.type === 'practice' || task.type === 'fill') {
-        if (task.subjectId && (subjectCount[task.subjectId] || 0) >= perSubjectCap) return false;
+        // The per-subject cap exists to stop the automatic choice from proposing
+        // the same subject all day. A hand-picked topic is an explicit decision,
+        // so it is not subject to that cap.
+        if (!opts.ignoreCap && task.subjectId && (subjectCount[task.subjectId] || 0) >= perSubjectCap) return false;
         if (task.subjectId) subjectCount[task.subjectId] = (subjectCount[task.subjectId] || 0) + 1;
       }
       tasks.push(task);
@@ -782,15 +804,27 @@ export function generatePlan(state, index, opts = {}) {
     // chose. Anything that no longer needs learning is reported rather than
     // silently dropped, so a pick is never quietly ignored.
     const missedPicks = [];
+    let picksDone = 0;
     if (picks.length) {
-      const all = groupTopics(state, index, sim, ctx, 999);
+      const all = groupTopics(state, index, sim, ctx, 999, 0);
+      const isComplete = (key) => {
+        const members = index.items.filter((i) => topicKeyOf(i) === key);
+        // An unknown key has no subtopics at all. Vacuously "every" would score
+        // it as done, so a stale or corrupt pick is reported as a miss instead.
+        if (!members.length) return false;
+        return members.every((i) => {
+          const rr = simGet(sim, i.id);
+          if (rr.progressPct >= 100 || rr.status === STATUS.STRONG || rr.status === STATUS.MASTERED) return true;
+          // "No minutes left" is the app's real definition of done: a subtopic
+          // at 98% of a 12-minute estimate has 0.24 minutes left, which rounds
+          // to 0. Testing progressPct alone would strand it at 98% forever.
+          return learnMinutesLeft(state, index, sim, i.id) <= 0;
+        });
+      };
       for (const [pi, key] of picks.entries()) {
+        if (isComplete(key)) { picksDone++; continue; }
         const group = all.find((g) => g.key === key);
         if (!group) {
-          missedPicks.push(key);
-          continue;
-        }
-        if ((subjectCount[group.subjectId] || 0) >= perSubjectCap) {
           missedPicks.push(key);
           continue;
         }
@@ -799,8 +833,12 @@ export function generatePlan(state, index, opts = {}) {
         t.picked = true;
         t.pickRank = pi;
         t.reason = 'You chose this for today.';
-        if (add(t)) simAdvanceLearnBlock(state, index, sim, group, t.plannedMin, date);
-        else missedPicks.push(key);
+        if (add(t, { ignoreCap: true })) {
+          simAdvanceLearnBlock(state, index, sim, group, t.plannedMin, date);
+          if (isComplete(key)) picksDone++;
+        } else {
+          missedPicks.push(key);
+        }
       }
     }
 
@@ -821,6 +859,12 @@ export function generatePlan(state, index, opts = {}) {
       quota[k] = Math.round(cap * (mix[k] || 0));
       spent[k] = 0;
     }
+    // A hand-picked day gives the student's own chapters first claim on the
+    // minutes. Practice is not skipped, only deferred to whatever is genuinely
+    // left over, otherwise finishing a pick early silently redirects the day
+    // to Mixed MCQ. Revisions stay in the quota pass: those are obligations.
+    const deferred = picks.length ? ['practice', 'mixed', 'mistakes'] : [];
+    for (const k of deferred) quota[k] = 0;
     const alreadyUsed = tasks.reduce((a, t) => a + t.plannedMin, 0);
     for (const k of Object.keys(quota)) {
       quota[k] = Math.max(0, quota[k] - Math.round(alreadyUsed * (mix[k] || 0)));
@@ -854,11 +898,16 @@ export function generatePlan(state, index, opts = {}) {
     const OVERFLOW_ORDER = ectx.phase === PHASE.DURING
       ? ['revise', 'mistakes', 'mixed', 'practice', 'maintenance']
       : ['learn', 'revise', 'mistakes', 'practice', 'mixed'];
+    // On a hand-picked day the overflow pass must not reach for another
+    // chapter, so the deferred types are skipped here and run at the end.
+    const overflowOrder = deferred.length
+      ? OVERFLOW_ORDER.filter((t) => !deferred.includes(t) && t !== 'learn')
+      : OVERFLOW_ORDER;
     guard = 0;
     let progressed = true;
     while (budget >= state.settings.minTaskMinutes && guard++ < 12 && progressed) {
       progressed = false;
-      for (const t of OVERFLOW_ORDER) {
+      for (const t of overflowOrder) {
         const made = mk(t);
         if (made && add(made.task)) {
           made.after();
@@ -869,9 +918,28 @@ export function generatePlan(state, index, opts = {}) {
       }
     }
 
-    // --- Pass 3: today only — explicit bonus block with alternatives -----
+    // --- Pass 3: the deferred types, now the picks have had their turn -----
+    if (deferred.length) {
+      guard = 0;
+      let progressed = true;
+      while (budget >= state.settings.minTaskMinutes && guard++ < 8 && progressed) {
+        progressed = false;
+        for (const t of deferred) {
+          if (!allowed.has(t)) continue;
+          const made = mk(t);
+          if (made && add(made.task)) {
+            made.after();
+            progressed = true;
+            if (made.task.type === 'mixed') lastMixedDi = di;
+            break;
+          }
+        }
+      }
+    }
+
+    // --- Pass 4: today only — explicit bonus block with alternatives -----
     if (date === today && budget >= state.settings.minTaskMinutes) {
-      const fill = buildFillTask(state, index, sim, ctx, budget, tasks);
+      const fill = buildFillTask(state, index, sim, ctx, budget, tasks, picks.length > 0);
       if (fill) add(fill);
     }
 
@@ -890,6 +958,7 @@ export function generatePlan(state, index, opts = {}) {
     // be honoured, so the plan never looks like it ignored the student.
     day.pickStyle = picks.length ? 'picks' : state.settings.planStyle === 'shuffle' ? 'shuffle' : 'auto';
     day.picksTotal = picks.length;
+    day.picksDone = picksDone;
     if (missedPicks.length) day.picksMissed = missedPicks;
 
     // Anything that did not fit and could not be placed later is reported.
@@ -954,12 +1023,16 @@ function openUnitId(state, index) {
   return best;
 }
 
-function buildFillTask(state, index, sim, ctx, budget, todayTasks) {
+function buildFillTask(state, index, sim, ctx, budget, todayTasks, picksActive = false) {
   const st = state.settings;
   const options = [];
 
-  const cands = groupTopics(state, index, sim, ctx, 3)
-    .filter((g) => !itemBusyToday(todayTasks, 'learn', g.members[0].id));
+  // On a hand-picked day the bonus block must not smuggle in a chapter the
+  // student did not choose, so that option is withheld entirely.
+  const cands = picksActive
+    ? []
+    : groupTopics(state, index, sim, ctx, 3)
+        .filter((g) => !itemBusyToday(todayTasks, 'learn', g.members[0].id));
   if (cands.length) {
     const group = cands[0];
     options.push({
@@ -1000,7 +1073,15 @@ function buildFillTask(state, index, sim, ctx, budget, todayTasks) {
 
   if (!options.length) return null;
   options.sort((a, b) => b.weight - a.weight);
-  const first = options[0].make();
+  // Try each option in turn. Picking one and letting `add` reject it wholesale
+  // silently lost the whole bonus block whenever the subject cap disagreed.
+  const ordered = [];
+  for (const o of options) {
+    const made = o.make();
+    if (made) ordered.push(made);
+    if (ordered.length >= 3) break;
+  }
+  const first = ordered[0];
   if (!first) return null;
   return {
     ...first,
@@ -1008,9 +1089,7 @@ function buildFillTask(state, index, sim, ctx, budget, todayTasks) {
     type: 'fill',
     priority: PRIORITY.LOW,
     reason: 'You finished early — spare time, not wasted time.',
-    alternatives: options.slice(1)
-      .map((o) => o.make())
-      .filter(Boolean)
+    alternatives: ordered.slice(1)
       .map((t2) => ({ id: t2.id, type: t2.type, itemId: t2.itemId, title: t2.title, plannedMin: t2.plannedMin, detail: t2.detail })),
   };
 }
@@ -1233,6 +1312,18 @@ function applyOutcomeToItem(state, index, task, outcome, f, dateISO, session) {
       r.difficulty = Math.min(5, (r.difficulty || item.size) + 1);
     }
     markStudied(state, item.id, dateISO, 'learn');
+    // Snap any subtopic of this chapter that has no minutes left to 100%.
+    // Otherwise a subtopic can sit at 98% forever: the planner treats it as
+    // finished because there is nothing left to study, but the record never
+    // says so, so the syllabus and the day's counters never agree.
+    for (const sib of index.items) {
+      if (topicKeyOf(sib) !== topicKeyOf(item)) continue;
+      const sr = getItem(state, sib.id);
+      if (sr.progressPct >= 100) continue;
+      const est = sr.estMinOverride || estMinutesFor(state, sib);
+      // Mirrors learnMinutesLeft(): what is left rounds to whole minutes.
+      if (Math.max(0, Math.round(est * (1 - sr.progressPct / 100))) <= 0) sr.progressPct = 100;
+    }
   } else if (task.type === 'revise') {
     r.progressPct = Math.max(r.progressPct, 100);
     if (outcome === OUTCOMES.TOO_DIFFICULT) {

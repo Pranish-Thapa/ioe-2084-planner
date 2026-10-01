@@ -168,8 +168,14 @@ function chooseTodayCard(a, date, day) {
   }
 
   if (mode === 'picks') {
+    const done = (day && typeof day.picksDone === 'number') ? day.picksDone : 0;
+    const miss = day && day.picksMissed ? day.picksMissed.length : 0;
     c.append(el('div', { class: 'row small muted', style: 'margin-bottom:8px;gap:10px' },
-      el('span', {}, picks.length ? `${picks.length} topic${picks.length === 1 ? '' : 's'} selected` : 'Nothing selected yet'),
+      el('span', {},
+        picks.length
+          ? `${done} of ${picks.length} picked topic${picks.length === 1 ? '' : 's'} done today`
+          : 'Nothing selected yet'),
+      miss ? el('span', { style: 'color:var(--high)' }, `${miss} did not fit today`) : null,
       picks.length
         ? el('button', {
             class: 'sm ghost',
@@ -355,6 +361,14 @@ function taskCard(a, t, done, date) {
   if (typeof t.progressBefore === 'number' && typeof t.progressAfter === 'number') {
     c.append(el('div', { class: 'small muted' },
       `Progress on this topic: ${t.progressBefore}% → ${t.progressAfter}%`));
+  }
+
+  // A chapter can hold several subtopics, so one block can leave some of them
+  // untouched. Without this the chapter simply reappears and looks ignored.
+  if (typeof t.subtopicsTotal === 'number' && t.subtopicsTotal > 1) {
+    c.append(el('div', { class: 'small muted' },
+      `${t.subtopicsDone} of ${t.subtopicsTotal} subtopics done`
+      + (t.subtopicsDone >= t.subtopicsTotal ? ' — chapter complete' : '')));
   }
 
   if (!done) {
